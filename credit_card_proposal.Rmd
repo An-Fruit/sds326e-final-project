@@ -213,7 +213,42 @@ when bills are 0.
 
 ## Processed Dataset
 
+The processed `credit` dataframe contains `r fmt_n(nrow(credit))` clients and `r ncol(credit)` variables: 23 original predictors, the response, and four derived predictors. The table below lists every column in dataframe order. Monetary amounts are in New Taiwan dollars (NT$); ratios are unitless.
 
+| Variable | Description |
+|:--|:--|
+| `LIMIT_BAL` | Amount of credit granted (NT$). |
+| `SEX` | Recorded sex, stored as a factor with levels Male and Female. |
+| `EDUCATION` | Education category: Graduate school, University, High school, Other, or Unknown. Original codes 0, 5, and 6 are grouped as Unknown. |
+| `MARRIAGE` | Marital status: Married, Single, Other, or Unknown. Original code 0 is labeled Unknown. |
+| `AGE` | Client's age in years. |
+| `PAY_0` | Repayment status in September 2005, stored as a factor. |
+| `PAY_2` | Repayment status in August 2005, stored as a factor. |
+| `PAY_3` | Repayment status in July 2005, stored as a factor. |
+| `PAY_4` | Repayment status in June 2005, stored as a factor. |
+| `PAY_5` | Repayment status in May 2005, stored as a factor. |
+| `PAY_6` | Repayment status in April 2005, stored as a factor. |
+| `BILL_AMT1` | Statement balance in September 2005 (NT$). |
+| `BILL_AMT2` | Statement balance in August 2005 (NT$). |
+| `BILL_AMT3` | Statement balance in July 2005 (NT$). |
+| `BILL_AMT4` | Statement balance in June 2005 (NT$). |
+| `BILL_AMT5` | Statement balance in May 2005 (NT$). |
+| `BILL_AMT6` | Statement balance in April 2005 (NT$). |
+| `PAY_AMT1` | Payment amount in September 2005 (NT$). |
+| `PAY_AMT2` | Payment amount in August 2005 (NT$). |
+| `PAY_AMT3` | Payment amount in July 2005 (NT$). |
+| `PAY_AMT4` | Payment amount in June 2005 (NT$). |
+| `PAY_AMT5` | Payment amount in May 2005 (NT$). |
+| `PAY_AMT6` | Payment amount in April 2005 (NT$). |
+| `default` | Binary response indicating default in the following month: 1 = default, 0 = no default. |
+| `delay_months` | Derived count of months with a strictly positive repayment-status code across April through September (0--6). |
+| `bill_to_limit_sep` | Derived ratio of September's statement balance to credit limit: `BILL_AMT1 / LIMIT_BAL`. |
+| `mean_bill_to_limit` | Derived ratio of the mean April--September statement balance to credit limit. |
+| `mean_payment_to_limit` | Derived ratio of the mean April--September payment amount to credit limit. |
+
+For the six repayment status vars, -1 denotes payment made on time and positive integers are months of delay. 
+Codes -2 and 0 remain separate levels with undocumented meanings. `ID` is excluded from 
+`credit` and kept separately as `client_id`.
 
 ## Notes (delete this later when you add on)
 
