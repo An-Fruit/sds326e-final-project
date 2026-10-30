@@ -1,0 +1,230 @@
+---
+title: "SDS 326E Project Proposal: Credit Card Defaulting Datset"
+output:
+  html_document:
+    theme: readable
+  pdf_document: default
+fontsize: 11pt
+geometry: margin=1in
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = TRUE)
+options(scipen = 999)
+fmt_n <- function(x) format(x, big.mark = ",", scientific = FALSE, trim = TRUE)
+fmt_pct <- function(x) sprintf("%.2f%%", 100 * x)
+```
+
+```{r import-and-audit, include=FALSE}
+# The CSV retains the spreadsheet's two header rows. The second contains names.
+credit_raw <- read.csv(
+  "credit_card_default.csv", skip = 1, check.names = FALSE,
+  stringsAsFactors = FALSE, na.strings = c("", "NA")
+)
+pay_cols <- c("PAY_0", paste0("PAY_", 2:6))
+bill_cols <- paste0("BILL_AMT", 1:6)
+amount_cols <- paste0("PAY_AMT", 1:6)
+expected_names <- c(
+  "ID", "LIMIT_BAL", "SEX", "EDUCATION", "MARRIAGE", "AGE",
+  pay_cols, bill_cols, amount_cols, "default payment next month"
+)
+stopifnot(identical(names(credit_raw), expected_names))
+names(credit_raw)[25] <- "default"
+
+stopifnot(
+  nrow(credit_raw) == 30000L,
+  all(vapply(credit_raw, is.numeric, logical(1))),
+  all(is.finite(as.matrix(credit_raw))),
+  !anyDuplicated(credit_raw$ID),
+  all(credit_raw$default %in% 0:1),
+  all(credit_raw$SEX %in% 1:2),
+  all(credit_raw$EDUCATION %in% 0:6),
+  all(credit_raw$MARRIAGE %in% 0:3),
+  all(as.matrix(credit_raw[pay_cols]) %in% -2:9),
+  all(credit_raw$LIMIT_BAL > 0),
+  all(credit_raw$AGE > 0),
+  all(as.matrix(credit_raw[amount_cols]) >= 0)
+)
+
+n_clients <- nrow(credit_raw)
+n_defaults <- sum(credit_raw$default)
+default_rate <- mean(credit_raw$default)
+n_identical_records <- sum(duplicated(credit_raw[setdiff(names(credit_raw), "ID")]))
+n_negative_bills <- sum(rowSums(credit_raw[bill_cols] < 0) > 0)
+n_over_limit <- sum(rowSums(
+  sweep(as.matrix(credit_raw[bill_cols]), 1, credit_raw$LIMIT_BAL, ">")
+) > 0)
+```
+
+# Introduction
+
+Two customers with similar credit limits may have very different repayment histories. One may consistently
+make payments, while the other falls behind. This project examines whether those differences
+help explain who defaults in the following month, and whether recent financial behavior can provide
+more predictive information than demographic characteristics.
+
+We use the "Default of Credit Card Clients" dataset from the [UCI Machine Learning Repository](https://archive.ics.uci.edu/dataset/350/default+of+credit+card+clients) ([dataset DOI](https://doi.org/10.24432/C55S3H)). The records concern credit card clients in Taiwan, with monthly histories from April through September 2005. Our local file, `credit_card_default.csv`, is a CSV conversion of the source spreadsheet. It contains `r fmt_n(n_clients)` clients, 23 predictors, an identifier, and a binary response indicating default in the following month. Financial amounts are recorded in New Taiwan dollars (NT$).
+
+When looking through the predictors, we chose to group them into 4 rough categories:
+
+| Group | Original variables | Description |
+|:--|:--|:--|
+| Customer characteristics | `SEX`, `EDUCATION`, `MARRIAGE`, `AGE` | Recorded sex, education, marital status, and age |
+| Credit limit | `LIMIT_BAL` | Amount of credit granted |
+| Repayment status | `PAY_0`, `PAY_2` through `PAY_6` | Monthly payment status codes from September back to April |
+| Bills and payments | `BILL_AMT1` through `BILL_AMT6`; `PAY_AMT1` through `PAY_AMT6` | Monthly statement balances and payment amounts from September back to April |
+
+Each row in the dataset represents one client, with six monthly observations stored in different variables 
+for a particular client (record). In the supplied file, `r fmt_n(n_defaults)` clients 
+(`r fmt_pct(default_rate)`) defaulted. From this, we can see that class imbalance exists between the defaulting vs. 
+non-defaulting clients.
+
+We propose four related research questions:
+
+1. How is the frequency and recency of recorded payment delays associated with defaulting?
+
+- Compare default rates across repayment histories and use logistic regression to estimate associations while accounting for credit limit and customer characteristics.
+
+2. How much predictive information do financial variables provide beyond demographics, and vice versa?
+
+- Compare demographic only, financial only, and combined models on the same validation folds. 
+We can use financial predictors  include credit limit, repayment status, bills, and payments.
+
+3. Does the association between balance relative to credit limit and default differ by recent repayment status?
+
+- Examine interaction between September's bill to limit ratio and September's repayment status (should consider nonlinear model here maybe)
+
+4. Can clients be grouped by their observed financial behavior, and do those groups have different default rates?
+
+- Clustering using financial predictors only, then compare default rates across the resulting groups.
+
+
+# Data Preprocessing
+
+## Import and data quality
+
+The CSV preserves two spreadsheet header rows: a row of generic labels (`X1` through `X23` and `Y`) followed 
+by the descriptive variable names. We skip the first row when importing, rename the response variable to `default`, 
+and keep its numeric coding of 0 and 1. We retain the original import as `credit_raw` and 
+create a separate analysis dataset, `credit`.
+
+```{r}
+audit <- data.frame(
+  Check = c("Client records", "Original columns, including ID and response",
+            "Missing cells", "Repeated IDs", "Defaults",
+            "Repeated records after excluding ID"),
+  Result = c(fmt_n(n_clients), ncol(credit_raw), sum(is.na(credit_raw)),
+             sum(duplicated(credit_raw$ID)), fmt_n(n_defaults),
+             n_identical_records)
+)
+knitr::kable(audit, align = c("l", "r"))
+```
+
+Since there aren't any missing cells or rows with duplicate IDs, we don't need to remote or impute any values.
+There are `r n_identical_records` repeated records after excluding ID, but these have distinct identifiers, so
+we assume that this is coincidental and not a data entry error with duplicate records. We decided to keep them and
+check sensitivity to repeated predictor profiles later during model evaluation for some of the research questions
+above. The client ID is kept separately and not used as a predictor.
+
+## Categorical variables
+
+Sex, education, and marital status are treated as categorical rather than numerical variables. The documentation 
+from the UCI repository defines education codes 1 - 4 and marital-status codes 1 - 3, but the CSV also includes education 
+codes 0, 5, and 6 along with marital status code 0. Since these other undocumented codes could have some predictive power,
+we chose to re-label them as a new `Unknown` categories instead of the existing `Other` categories.
+
+```{r}
+client_id <- credit_raw$ID
+credit <- credit_raw[setdiff(names(credit_raw), "ID")]
+credit$SEX <- factor(credit$SEX, levels = c(1, 2), labels = c("Male", "Female"))
+credit$EDUCATION <- factor(
+  ifelse(credit$EDUCATION %in% c(0, 5, 6), 0, credit$EDUCATION),
+  levels = c(1, 2, 3, 4, 0),
+  labels = c("Graduate school", "University", "High school", "Other", "Unknown")
+)
+credit$MARRIAGE <- factor(
+  credit$MARRIAGE, levels = c(1, 2, 3, 0),
+  labels = c("Married", "Single", "Other", "Unknown")
+)
+
+# transform
+for (nm in pay_cols) credit[[nm]] <- factor(credit_raw[[nm]])
+```
+
+```{r}
+knitr::kable(data.frame(
+  Variable = c("Education", "Marital status"),
+  `Codes labeled Unknown` = c("0, 5, 6", "0"),
+  Clients = c(sum(credit$EDUCATION == "Unknown"),
+              sum(credit$MARRIAGE == "Unknown")),
+  check.names = FALSE
+))
+```
+
+Repayment codes require particular care. UCI defines -1 as payment made duly and positive values as months of 
+delay, but the original source doesn't explain values of -2 or 0. We keep these as separate levels in their own
+right rather than treating them as missing, assigning them a meaning, or averaging them with delay lengths. 
+For summary features, a recorded delay means a strictly positive status code.
+
+## Financial values and derived predictors
+
+Credit limits are positive and payment amounts are non-negative. However, `r fmt_n(n_negative_bills)` clients 
+have at least one negative statement balance, and `r fmt_n(n_over_limit)` have at least one statement 
+balance above their recorded credit limit. We chose to treat clients with these values as
+valid since the documentation didn't explicitly state that such records are erroneous. For instance,
+a statement balance over the credit limit could just mean that the client's credit limit decreased to its 
+current amount at some point. We also avoid automatically trimming large balances or payments, since those 
+observations may be relevant to default risk.
+
+To connect the data to our questions, we add four summaries while preserving all 23 original predictors:
+
+```{r}
+credit$delay_months <- rowSums(credit_raw[pay_cols] > 0)
+credit$bill_to_limit_sep <- credit_raw$BILL_AMT1 / credit_raw$LIMIT_BAL
+credit$mean_bill_to_limit <- rowMeans(credit_raw[bill_cols]) / credit_raw$LIMIT_BAL
+credit$mean_payment_to_limit <- rowMeans(credit_raw[amount_cols]) / credit_raw$LIMIT_BAL
+
+demographic_predictors <- c("SEX", "EDUCATION", "MARRIAGE", "AGE")
+financial_predictors <- c("LIMIT_BAL", pay_cols, bill_cols, amount_cols)
+cluster_predictors <- c("delay_months", "mean_bill_to_limit", "mean_payment_to_limit")
+
+stopifnot(
+  nrow(credit) == n_clients, ncol(credit) == 28L,
+  !anyNA(credit), !"ID" %in% names(credit),
+  all(credit$delay_months %in% 0:6),
+  all(is.finite(as.matrix(credit[c(
+    "bill_to_limit_sep", "mean_bill_to_limit", "mean_payment_to_limit"
+  )])))
+)
+```
+
+| Derived variable | Purpose |
+|:--|:--|
+| `delay_months` | Number of months with a positive repayment status code (0 - 6). Summarizes the frequency of recorded delays |
+| `bill_to_limit_sep` | September statement balance divided by credit limit. Used with September repayment status for the interaction question |
+| `mean_bill_to_limit` | Mean of the six statement balances divided by credit limit. Summarizes relative balances |
+| `mean_payment_to_limit` | Mean of the six payment amounts divided by credit limit. Summarizes relative payment amounts |
+
+The bill-to-limit ratios can be used as proxies for credit use based on statement balances, and we 
+chose to keep negative ratios and ratios > 1. 
+
+We chose to create `mean_payment_to_limit` to avoid the case where payment to bill ratios could be undefined
+when bills are 0.
+
+## Processed Dataset
+
+
+
+## Notes (delete this later when you add on)
+
+- Remember to use K-fold CV for model selection and to pick the hyperparameters
+- If any numeric variables that are associated w/ money are transformed for any of the 
+research questions, make sure to use `log1p` for non-negative values and a sign-preserving
+function for anything with a negative value.
+- Class imbalance exists between defaulting vs. non-defaulting
+  - use ROC/AUC and either F-score, balanced accuracy or some other method that takes this into 
+  account when evaluating models
+- If any of you choose to use clustering MAKE SURE you can vouch that the clustering is good before
+attempting to perform any analysis on how the clusters are different w.r.t. each other and the response 
+(default rate, etc.)
+  - probably dont want to use too many vars since we run into curse of dimensionality
